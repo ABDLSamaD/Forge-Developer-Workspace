@@ -14,6 +14,9 @@ if (!app.requestSingleInstanceLock()) {
 // Force sandbox mode for all renderers before app is ready
 app.enableSandbox();
 
+// Taskbar grouping + notifications use this id (matches build.appId)
+app.setAppUserModelId("com.forge.workspace");
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1020,
@@ -24,6 +27,7 @@ function createWindow() {
     title: "Forge — Developer Workspace",
     backgroundColor: "#16171b",
     show: false,
+    icon: path.join(__dirname, "build", "icon.png"),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
