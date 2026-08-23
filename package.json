@@ -1,7 +1,7 @@
 {
   "name": "forge-workspace",
   "productName": "Forge",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Forge — a personal developer workspace for managing projects, work items, schedule and activity",
   "main": "main.js",
   "scripts": {
@@ -21,6 +21,7 @@
   "build": {
     "appId": "com.forge.workspace",
     "productName": "Forge",
+    "icon": "build/icon.ico",
     "asar": true,
     "files": [
       "main.js",
@@ -34,8 +35,18 @@
     },
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
@@ -45,11 +56,21 @@
       "createStartMenuShortcut": true
     },
     "mac": {
-      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
       "category": "public.app-category.productivity"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "category": "Utility"
     }
   }
