@@ -42,24 +42,39 @@ App.forms = (() => {
       [["", "No project"], ...App.state.projects.map((p) => [p.id, p.name])],
       initial.projectId || ""
     );
+    const prioSel = select(App.PRIORITIES, initial.priority || "medium");
+    const dueInput = h("input", { class: "input", type: "date", value: initial.dueDate || "" });
     const typeSel = select(App.TYPES, initial.type || "feature");
     const statusSel = select(App.STATUSES, initial.status || "planned");
-    const prioSel = select(App.PRIORITIES, initial.priority || "medium");
     const effortSel = select(App.EFFORTS.map(([v, l]) => [v, `Effort: ${l}`]), initial.effort || "medium");
-    const dueInput = h("input", { class: "input", type: "date", value: initial.dueDate || "" });
     const startInput = h("input", { class: "input", type: "date", value: initial.startDate || "" });
     const descEl = textarea(initial.description, "What needs to be done?", 3);
     const notesEl = textarea(initial.notes, "Technical notes, links, decisions...", 3);
     const tagsInput = textInput((initial.tags || []).join(", "), "bug, api, urgent");
+    const fileNameInput = textInput(initial.fileName || "", "src/app/work.ts", { maxlength: 300 });
+    const filePathInput = textInput(initial.filePath || "", "Project file or folder path");
+    const commitInput = textInput(initial.commitId || "", "Commit hash or short id");
+    const extraDetailsInput = textarea(initial.extraDetails || "", "Extra details for commit context, file references, decisions...", 3);
+    const isCommitType = () => typeSel.value === "commit";
+    const commitHint = h("p", { class: "muted small-note commit-hint" }, "Select Commit to add file, commit and notes context.");
 
     let moreOpen = false;
     const moreSection = h("div", { class: "collapsible" },
       h("div", { class: "form-grid" },
+        field("Status", statusSel),
+        field("Type", typeSel),
         field("Description", descEl),
         field("Tags (comma separated)", tagsInput),
         field("Start date", startInput),
         field("Estimate", effortSel),
         field("Notes", notesEl, null)
+      ),
+      h("div", { class: "section-label" }, "Commit Context"),
+      h("div", { class: "form-grid" },
+        field("File name", fileNameInput),
+        field("File path / folder", filePathInput),
+        field("Commit ID", commitInput),
+        field("Extra details", extraDetailsInput)
       )
     );
 
@@ -78,6 +93,8 @@ App.forms = (() => {
     const saveBtn = h("button", { class: "btn primary", type: "submit" }, isEdit ? "Save changes" : "Create item");
     const cancelBtn = h("button", { class: "btn ghost", type: "button", onclick: () => modal.close() }, "Cancel");
 
+    const projectSummary = h("div", { class: "project-summary-card hidden", dataset: { kind: "project-summary" } });
+
     const form = h("form", {
       class: "task-form",
       onsubmit: async (e) => {
@@ -90,17 +107,19 @@ App.forms = (() => {
           return;
         }
 
+        const commitPayload = isCommitType();
         const payload = {
           title: titleVal,
           projectId: projectSel.value || null,
-          type: typeSel.value,
-          status: statusSel.value,
           priority: prioSel.value,
           dueDate: dueInput.value || null,
+          status: initial.status || "planned",
+          type: typeSel.value,
         };
 
         if (moreOpen || descEl.value.trim() || notesEl.value.trim() || tagsInput.value.trim() ||
-            startInput.value || initial.effort !== undefined) {
+            startInput.value || initial.effort !== undefined || initial.status || initial.type) {
+          payload.status = statusSel.value;
           payload.description = descEl.value;
           payload.notes = notesEl.value;
           payload.startDate = startInput.value || null;
@@ -113,6 +132,18 @@ App.forms = (() => {
           if (initial.tags && initial.tags.length) payload.tags = initial.tags;
           if (initial.startDate) payload.startDate = initial.startDate;
           if (initial.effort) payload.effort = initial.effort;
+        }
+
+        if (commitPayload) {
+          payload.fileName = fileNameInput.value.trim() || null;
+          payload.filePath = filePathInput.value.trim() || null;
+          payload.commitId = commitInput.value.trim() || null;
+          payload.extraDetails = extraDetailsInput.value.trim() || null;
+        } else {
+          payload.fileName = null;
+          payload.filePath = null;
+          payload.commitId = null;
+          payload.extraDetails = null;
         }
 
         saveBtn.disabled = true;
@@ -131,15 +162,13 @@ App.forms = (() => {
       },
     },
       field("Title", title, true),
-      h("div", { class: "form-grid col-3" },
-        field("Project", projectSel),
-        field("Type", typeSel),
-        field("Status", statusSel)
-      ),
       h("div", { class: "form-grid col-2" },
+        field("Project", projectSel),
         field("Priority", prioSel),
         field("Due date", dueInput)
       ),
+      projectSummary,
+      commitHint,
       moreBtn,
       moreSection,
       errorLine,
@@ -151,17 +180,69 @@ App.forms = (() => {
       body: form,
       width: 520,
     });
+
+    async function fillCommitFromClipboard() {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text && !commitInput.value.trim()) commitInput.value = text.trim().slice(0, 120);
+      } catch {
+        /* clipboard unavailable */
+      }
+    }
+
+    function refreshCommitFields() {
+      const show = isCommitType();
+      if (show && !moreOpen) {
+        moreOpen = true;
+        moreSection.classList.add("open");
+        moreBtn.textContent = "Fewer options";
+      }
+      fileNameInput.closest(".field").style.display = show ? "" : "none";
+      filePathInput.closest(".field").style.display = show ? "" : "none";
+      commitInput.closest(".field").style.display = show ? "" : "none";
+      extraDetailsInput.closest(".field").style.display = show ? "" : "none";
+      commitHint.style.display = show ? "none" : "";
+      filePathInput.placeholder = show && projectSel.value && App.projectById(projectSel.value)
+        ? `Project root: ${App.projectById(projectSel.value).rootPath || "set project root in project details"}`
+        : "Project file or folder path";
+      if (show) fillCommitFromClipboard();
+      const project = projectSel.value ? App.projectById(projectSel.value) : null;
+      if (project) {
+        projectSummary.classList.remove("hidden");
+        App.clear(projectSummary);
+        projectSummary.append(
+            h("div", { class: "project-summary-head" },
+              h("strong", null, project.name),
+              h("span", { class: "muted small" }, `Project #${project.id.slice(0, 8)}`)
+            ),
+            project.description && h("p", { class: "muted small-note" }, project.description),
+            h("div", { class: "project-summary-meta" },
+              h("span", null, `Status: ${App.label(App.PROJECT_STATUSES, project.status)}`),
+              h("span", null, `Priority: ${App.priorityLabel(project.priority)}`),
+              project.targetDate && h("span", null, `Target: ${App.fmtDate(project.targetDate)}`),
+              project.rootPath && h("span", null, `Root: ${project.rootPath}`)
+            )
+          );
+      } else {
+        projectSummary.classList.add("hidden");
+        App.clear(projectSummary);
+      }
+    }
+
+    typeSel.addEventListener("change", refreshCommitFields);
+    projectSel.addEventListener("change", refreshCommitFields);
+    refreshCommitFields();
   }
 
   /** Quick capture — one input, Enter creates. */
   function openQuickCapture(preset = {}) {
     const input = textInput("", "What are you working on? e.g. Fix Shopify token issue", { maxlength: 300 });
-    const statusSel = select([["planned", "Planned"], ["in-progress", "In Progress"], ["backlog", "Backlog"]], preset.status || "planned");
-    const prioSel = select(App.PRIORITIES, preset.priority || "medium");
     const projectSel = select(
       [["", "No project"], ...App.state.projects.filter((p) => p.status === "active").map((p) => [p.id, p.name])],
       preset.projectId || ""
     );
+    const prioSel = select(App.PRIORITIES, preset.priority || "medium");
+    const dueInput = h("input", { class: "input", type: "date", value: preset.dueDate || "" });
 
     const fullFormBtn = h("button", { class: "btn ghost", type: "button" }, "Open full form...");
     const captureBtn = h("button", { class: "btn primary", type: "submit" }, "Capture");
@@ -179,11 +260,11 @@ App.forms = (() => {
         if (!title) return;
         const result = await forge.createTask({
           title,
-          status: statusSel.value,
           priority: prioSel.value,
           projectId: projectSel.value || null,
-          dueDate: preset.dueDate || null,
+          dueDate: dueInput.value || null,
           type: preset.type || "other",
+          status: preset.status || "planned",
         });
         if (App.applyResult(result)) {
           modal.close();
@@ -194,11 +275,11 @@ App.forms = (() => {
       },
     },
       field("Title", input, true),
-      h("div", { class: "form-grid col-3" },
-        field("Status", statusSel),
-        field("Priority", prioSel),
-        field("Project", projectSel)
+      h("div", { class: "form-grid col-2" },
+        field("Project", projectSel),
+        field("Priority", prioSel)
       ),
+      field("Due date", dueInput),
       h("div", { class: "form-actions" }, fullFormBtn, captureBtn)
     );
 
@@ -217,6 +298,9 @@ App.forms = (() => {
     const targetInput = h("input", { class: "input", type: "date", value: initial.targetDate || "" });
     const colorInput = h("input", { class: "color-input", type: "color", value: initial.color || "#6c8cff" });
     const tagsInput = textInput((initial.tags || []).join(", "), "client, web");
+    const repoInput = textInput(initial.repoUrl || "", "https://github.com/...");
+    const rootInput = textInput(initial.rootPath || "", "C:\\projects\\app");
+    const extraNotes = textarea(initial.extraNotes || "", "Project files, IDs, handoff notes, setup details...", 3);
     const errorLine = h("div", { class: "form-error hidden" });
 
     const form = h("form", {
@@ -237,6 +321,9 @@ App.forms = (() => {
           targetDate: targetInput.value || null,
           color: colorInput.value,
           tags: tagsInput.value.split(",").map((t) => t.trim()).filter(Boolean),
+          repoUrl: repoInput.value.trim() || null,
+          rootPath: rootInput.value.trim() || null,
+          extraNotes: extraNotes.value.trim() || null,
         };
         const result = isEdit
           ? await forge.updateProject(initial.id, payload)
@@ -260,6 +347,12 @@ App.forms = (() => {
         field("Target date", targetInput)
       ),
       field("Tags", tagsInput),
+      h("div", { class: "section-label" }, "Project Details"),
+      h("div", { class: "form-grid" },
+        field("Repo URL", repoInput),
+        field("Root path", rootInput),
+        field("Extra notes", extraNotes)
+      ),
       errorLine,
       h("div", { class: "form-actions" },
         h("button", { class: "btn ghost", type: "button", onclick: () => modal.close() }, "Cancel"),

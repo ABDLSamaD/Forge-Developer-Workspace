@@ -93,6 +93,18 @@ App.detail = (() => {
       .slice(0, 30);
 
     const isDone = ["completed", "cancelled"].includes(task.status);
+    const sessionKey = `forge-task-session:${task.id}`;
+
+    async function ensureSession() {
+      const existing = sessionStorage.getItem(sessionKey);
+      if (existing) return existing;
+      const result = await forge.terminal.createSession({});
+      if (result && result.ok && result.session && result.session.id) {
+        sessionStorage.setItem(sessionKey, result.session.id);
+        return result.session.id;
+      }
+      return null;
+    }
 
     /* --- header --- */
     const head = h("div", { class: "drawer-head" },
@@ -156,6 +168,17 @@ App.detail = (() => {
       detailRow("Due date", dueValue),
       task.startDate && detailRow("Start date", App.fmtDate(task.startDate)),
       task.completedAt && detailRow("Completed", new Date(task.completedAt).toLocaleString()),
+      detailRow("Project", project ? h("p", { class: "pre-wrap desc-text" },
+        h("strong", null, project.name),
+        project.description ? `\n${project.description}` : ""
+      ) : null),
+      detailRow("Project id", task.projectId ? h("code", { class: "inline-code" }, task.projectId) : null),
+      task.type === "commit" && detailRow("File name", task.fileName ? h("code", { class: "inline-code" }, task.fileName) : null),
+      task.type === "commit" && detailRow("File path", task.filePath ? h("code", { class: "inline-code" }, task.filePath) : null),
+      task.type === "commit" && detailRow("Commit ID", task.commitId ? h("code", { class: "inline-code" }, task.commitId) : null),
+      task.type === "commit" && detailRow("Commit notes", h("p", { class: "muted small-note" }, task.extraDetails || "Add file, folder, commit or handoff notes from the work form.")),
+      detailRow("Git", gitSummary(project, task)),
+      detailRow("Session", sessionPanel(task, ensureSession)),
       detailRow("Tags", task.tags.length
         ? h("div", { class: "tag-wrap" }, task.tags.map((t) => h("span", { class: "tag-chip" }, t)))
         : null),
@@ -217,6 +240,85 @@ App.detail = (() => {
 
     panel.append(head, statusRow, body, actSection, foot);
     panel.classList.add("open");
+  }
+
+  function gitSummary(project, task) {
+    const outputEl = h("pre", { class: "dev-panel-pre" }, "Use the project root to fetch a real git status.");
+    return h("div", { class: "dev-panel" },
+      h("div", { class: "dev-panel-head" },
+        h("strong", null, "Git status"),
+        h("span", { class: "muted small" }, project ? project.name : "No project bound")
+      ),
+      outputEl,
+      h("div", { class: "dev-panel-actions" },
+        h("button", {
+          class: "btn sm ghost",
+          type: "button",
+          onclick: async () => {
+            const result = await forge.git.status(project && project.rootPath ? project.rootPath : undefined);
+            if (result && result.ok) {
+              outputEl.textContent = result.output || "(clean working tree)";
+              App.toast.show({ msg: "Git status loaded", kind: "success" });
+            } else {
+              App.toast.show({ msg: result && result.error ? result.error : "Git status failed", kind: "error" });
+            }
+          },
+        }, "Load status"),
+        h("button", {
+          class: "btn sm ghost",
+          type: "button",
+          onclick: async () => {
+            const result = await forge.git.log(project && project.rootPath ? project.rootPath : undefined);
+            if (result && result.ok) {
+              outputEl.textContent = result.output || "(no commits yet)";
+              App.toast.show({ msg: "Git log loaded", kind: "success" });
+            } else {
+              App.toast.show({ msg: result && result.error ? result.error : "Git log failed", kind: "error" });
+            }
+          },
+        }, "Load log")
+      )
+    );
+  }
+
+  function sessionPanel(task, ensureSession) {
+    const outputEl = h("pre", { class: "dev-panel-pre session-output" }, "Terminal output will appear here after creating a session.");
+    const sessionId = sessionStorage.getItem(`forge-task-session:${task.id}`);
+
+    const refreshBtn = h("button", {
+      class: "btn sm ghost",
+      type: "button",
+      onclick: async () => {
+        const id = sessionStorage.getItem(`forge-task-session:${task.id}`);
+        if (!id) return;
+        const result = await forge.terminal.read(id);
+        outputEl.textContent = result && result.ok ? (result.output || "(no output yet)") : (result && result.error) || "Session unavailable";
+      },
+    }, "Refresh output");
+
+    return h("div", { class: "dev-panel" },
+      h("div", { class: "dev-panel-head" },
+        h("strong", null, "Terminal session"),
+        h("span", { class: "muted small" }, sessionId ? `Session ${sessionId}` : "Not started")
+      ),
+      outputEl,
+      h("div", { class: "dev-panel-actions" },
+        h("button", {
+          class: "btn sm primary",
+          type: "button",
+          onclick: async () => {
+            const id = await ensureSession();
+            if (!id) {
+              App.toast.show({ msg: "Could not start terminal session", kind: "error" });
+              return;
+            }
+            const output = await forge.terminal.read(id);
+            outputEl.textContent = output && output.ok ? (output.output || "(session created)") : "Session created";
+          },
+        }, "Start session"),
+        refreshBtn
+      )
+    );
   }
 
   function completeTask(task) {

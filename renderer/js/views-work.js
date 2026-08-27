@@ -141,7 +141,12 @@
   App.views.work = {
     render(container) {
       const ui = App.ui.work;
-      const header = pageHeader("My Work", `${App.activeTasks().length} active item(s)`);
+      const activeTasks = App.activeTasks();
+      const completedRecent = App.sortTasks(
+        App.state.tasks.filter((t) => t.status === "completed"),
+        "updated"
+      ).slice(0, 6);
+      const header = pageHeader("My Work", `${activeTasks.length} active item(s) · ${completedRecent.length} recent completed`);
 
       const newBtn = h("button", {
         class: "btn primary",
@@ -189,6 +194,17 @@
 
       container.append(countLine, listBox);
       renderInto(listBox, countLine, "work", { pinnedFirst: true });
+
+      if (completedRecent.length) {
+        const completedBox = h("div", { class: "list-stack work-completed-stack" });
+        container.append(
+          h("h3", { class: "widget-title standalone" }, "Recently Completed"),
+          completedBox
+        );
+        completedRecent.forEach((t) =>
+          completedBox.append(App.buildTaskCard(t, { showCompletedAt: true }))
+        );
+      }
     },
   };
 

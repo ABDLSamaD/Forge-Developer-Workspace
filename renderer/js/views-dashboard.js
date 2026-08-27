@@ -177,6 +177,50 @@
       /* analytics strip */
       const monthAgoTs = Date.now() - 30 * 86400000;
       const completedMonth = App.state.tasks.filter((t) => t.completedAt && t.completedAt >= monthAgoTs).length;
+      const activeProjectsSummary = App.state.projects.filter((p) => p.status === "active");
+      const projectProgress = activeProjects.reduce((acc, p) => {
+        const prog = App.projectProgress(p);
+        acc.total += prog.total;
+        acc.done += prog.done;
+        return acc;
+      }, { total: 0, done: 0 });
+      const avgCompletion = projectProgress.total ? Math.round((projectProgress.done / projectProgress.total) * 100) : 0;
+      const sessionCount = App.state.tasks.filter((t) => t.projectId).length;
+      const devPulse = h("section", { class: "widget wide command-center" },
+        h("div", { class: "widget-head" },
+          h("h3", { class: "widget-title" },
+            h("span", { class: "widget-icon", html: App.icon("command", 13) }),
+            "Developer Command Center"
+          )
+        ),
+        h("div", { class: "command-grid" },
+          h("div", { class: "command-card" },
+            h("span", { class: "command-kicker" }, "Workstream"),
+            h("strong", null, `${active.length} open item(s)`),
+            h("p", { class: "muted small" }, "Focus on the next meaningful task, not the whole backlog.")
+          ),
+          h("div", { class: "command-card" },
+            h("span", { class: "command-kicker" }, "Git"),
+            h("strong", null, "Safe main-process service"),
+            h("p", { class: "muted small" }, "Git operations will be routed through validated IPC calls.")
+          ),
+          h("div", { class: "command-card" },
+            h("span", { class: "command-kicker" }, "Terminal"),
+            h("strong", null, "Session-based control"),
+            h("p", { class: "muted small" }, "Interactive shells stay behind explicit main-process sessions.")
+          ),
+          h("div", { class: "command-card" },
+            h("span", { class: "command-kicker" }, "Projects"),
+            h("strong", null, `${activeProjectsSummary.length} active project(s)`),
+            h("p", { class: "muted small" }, `Average project completion: ${avgCompletion}%`)
+          ),
+          h("div", { class: "command-card" },
+            h("span", { class: "command-kicker" }, "Sessions"),
+            h("strong", null, `${sessionCount} linked task(s)`),
+            h("p", { class: "muted small" }, "Tasks can later reference files, Git and terminal context.")
+          )
+        )
+      );
 
       container.append(
         h("div", { class: "dash-greeting" },
@@ -199,6 +243,7 @@
         ),
         quickInput,
         kpis,
+        devPulse,
 
         h("div", { class: "widgets-grid" },
           widget("Focus Today", "target",

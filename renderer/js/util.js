@@ -108,6 +108,7 @@ Object.assign(App, {
   TYPES: [
     ["feature", "Feature"],
     ["bug", "Bug"],
+    ["commit", "Commit"],
     ["improvement", "Improvement"],
     ["research", "Research"],
     ["refactor", "Refactor"],
