@@ -7,13 +7,13 @@ verified against the current code (v3.1.0).
 
 | Control | Status |
 | --- | --- |
-| `contextIsolation: true` | ✅ main.js |
-| `nodeIntegration: false` | ✅ main.js |
-| `sandbox: true` + `app.enableSandbox()` | ✅ main.js |
-| `webviewTag: false` | ✅ main.js |
-| DevTools disabled in packaged builds | ✅ `devTools: !app.isPackaged` |
-| Single-instance lock | ✅ prevents multi-process DB contention |
-| All web permissions denied (request + check handlers) | ✅ main.js |
+| `contextIsolation: true` | main.js |
+| `nodeIntegration: false` | main.js |
+| `sandbox: true` + `app.enableSandbox()` | main.js |
+| `webviewTag: false` | main.js |
+| DevTools disabled in packaged builds | `devTools: !app.isPackaged` |
+| Single-instance lock | prevents multi-process DB contention |
+| All web permissions denied (request + check handlers) | main.js |
 
 ## Content security
 
