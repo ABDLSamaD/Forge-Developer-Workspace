@@ -1,20 +1,28 @@
 {
   "name": "forge-workspace",
   "productName": "Forge",
-  "version": "3.0.2",
+  "version": "3.2.6",
   "description": "Forge — a personal developer workspace for managing projects, work items, schedule and activity",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac",
-    "dist:linux": "electron-builder --linux",
-    "dist:dir": "electron-builder --dir"
+    "postinstall": "electron-builder install-app-deps",
+    "test": "electron scripts/db-smoke.test.js",
+    "verify:build": "node scripts/validate-build.js",
+    "build:smoke": "node scripts/build-smoke.test.js",
+    "dist": "npm run verify:build && electron-builder",
+    "dist:win": "npm run verify:build && electron-builder --win",
+    "dist:mac": "npm run verify:build && electron-builder --mac",
+    "dist:linux": "npm run verify:build && electron-builder --linux",
+    "dist:dir": "npm run verify:build && electron-builder --dir"
   },
   "author": "",
   "license": "MIT",
+  "dependencies": {
+    "better-sqlite3": "^12.11.1"
+  },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.1",
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3"
   },
@@ -23,10 +31,16 @@
     "productName": "Forge",
     "icon": "build/icon.ico",
     "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**"
+    ],
     "files": [
       "main.js",
       "ipc.js",
+      "process-service.js",
       "store.js",
+      "db.js",
+      "backup.js",
       "preload.js",
       "renderer/**/*"
     ],
@@ -74,5 +88,8 @@
       ],
       "category": "Utility"
     }
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1"
   }
 }

@@ -4,21 +4,27 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { app, dialog } = require("electron");
+const db = require("./db");
+const backupService = require("./backup");
 
 /* ------------------------------------------------------------------ *
- * Forge data layer (schema v3)
+ * Forge data layer (schema v3) — backed by SQLite
  * State: { version, tasks, projects, activity, settings }
+ *
+ * The in-memory state remains the read model the renderer sees;
+ * every mutation is mirrored into SQLite immediately (WAL mode).
+ * The legacy forge-data.json / todos.json files are migrated once,
+ * automatically, and are never modified or deleted.
  * ------------------------------------------------------------------ */
 
 const SCHEMA_VERSION = 3;
 const MAX_TASKS = 2000;
 const MAX_PROJECTS = 100;
-const MAX_ACTIVITY = 800;
+const MAX_ACTIVITY = db.ACTIVITY_LIMIT;
 const MAX_TITLE = 300;
 const MAX_TEXT = 4000;
 const MAX_TAGS = 10;
 const MAX_TAG_LEN = 24;
-const SAVE_DEBOUNCE_MS = 200;
 const DELETE_WINDOW_MS = 6000; // soft-delete undo window
 
 const STATUSES = [
@@ -35,6 +41,7 @@ const PRIORITIES = ["critical", "high", "medium", "low"];
 const TYPES = [
   "feature",
   "bug",
+  "commit",
   "improvement",
   "research",
   "refactor",
@@ -51,12 +58,9 @@ const PROJECT_STATUSES = ["active", "on-hold", "completed"];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 let state = null;
-let saveTimer = null;
 let rev = 0; // bumped on every mutation so the renderer can dedupe push updates
 /** id -> { task, index, timer } during the undo window */
 const pendingDeletes = new Map();
-
-const dataFile = () => path.join(app.getPath("userData"), "forge-data.json");
 
 /* ---------------------------- sanitizing --------------------------- */
 
@@ -122,6 +126,10 @@ function sanitizeTask(raw) {
     effort: pickEnum(raw.effort, EFFORTS, "medium"),
     startDate: cleanDate(raw.startDate),
     dueDate: cleanDate(raw.dueDate),
+    fileName: cleanString(raw.fileName, MAX_TITLE),
+    filePath: cleanString(raw.filePath, MAX_TEXT),
+    commitId: cleanString(raw.commitId, 120),
+    extraDetails: cleanString(raw.extraDetails, MAX_TEXT),
     completedAt: status === "completed" ? cleanTimestamp(raw.completedAt) ?? Date.now() : null,
     archived: Boolean(raw.archived),
     pinned: Boolean(raw.pinned),
@@ -146,6 +154,9 @@ function sanitizeProject(raw) {
     startDate: cleanDate(raw.startDate),
     targetDate: cleanDate(raw.targetDate),
     tags: cleanTags(raw.tags),
+    repoUrl: cleanString(raw.repoUrl, MAX_TEXT),
+    rootPath: cleanString(raw.rootPath, MAX_TEXT),
+    extraNotes: cleanString(raw.extraNotes, MAX_TEXT),
     createdAt,
     updatedAt: cleanTimestamp(raw.updatedAt) ?? createdAt,
   };
@@ -230,7 +241,7 @@ function sanitizeState(parsed) {
 /* ----------------------------- activity ---------------------------- */
 
 function logActivity({ entity, entityId, action, title, details }) {
-  state.activity.unshift({
+  const entry = {
     id: generateId(),
     entity,
     entityId: entityId ?? null,
@@ -238,8 +249,10 @@ function logActivity({ entity, entityId, action, title, details }) {
     title: title ?? "",
     details: details ?? null,
     at: Date.now(),
-  });
+  };
+  state.activity.unshift(entry);
   if (state.activity.length > MAX_ACTIVITY) state.activity.length = MAX_ACTIVITY;
+  db.insertActivity(entry);
 }
 
 /* --------------------------- persistence --------------------------- */
@@ -251,62 +264,88 @@ function snapshot() {
 const ok = () => ({ ok: true, state: snapshot(), rev });
 const fail = (error) => ({ ok: false, error });
 
+/** Every successful mutation bumps rev; SQLite writes are already durable. */
 function scheduleSave() {
   rev++;
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(flush, SAVE_DEBOUNCE_MS);
 }
 
 function flush() {
-  if (!state) return;
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-    saveTimer = null;
-  }
+  db.checkpoint();
+}
+
+function close() {
+  for (const entry of pendingDeletes.values()) clearTimeout(entry.timer);
+  pendingDeletes.clear();
+  db.close();
+}
+
+/* --------------------- legacy JSON -> SQLite import ---------------- */
+
+function tryMigrateLegacyJson() {
+  if (db.getMeta("json_migrated_at")) return false;
+
+  let source = null;
+  let sourceName = null;
+
+  // Current-format JSON first, then the pre-Forge todos.json array.
+  const jsonPath = path.join(app.getPath("userData"), "forge-data.json");
+  const legacyPath = path.join(app.getPath("userData"), "todos.json");
   try {
-    const tmp = dataFile() + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf-8");
-    fs.renameSync(tmp, dataFile());
-  } catch (err) {
-    console.error("Failed to persist workspace:", err.message);
+    source = JSON.parse(fs.readFileSync(jsonPath, "utf-8"));
+    sourceName = "forge-data.json";
+  } catch {
+    try {
+      source = JSON.parse(fs.readFileSync(legacyPath, "utf-8"));
+      sourceName = "todos.json";
+    } catch {
+      /* nothing to migrate */
+    }
   }
+
+  if (!source) {
+    // Mark as handled so we don't rescan on every launch.
+    db.setMeta("json_migrated_at", String(Date.now()));
+    return false;
+  }
+  if (Array.isArray(source)) source = { todos: source };
+
+  const migrated = sanitizeState(source);
+  db.replaceAll(migrated);
+  db.setMeta("json_migrated_at", String(Date.now()));
+
+  console.log(
+    `[store] migrated ${migrated.tasks.length} task(s) and ` +
+      `${migrated.projects.length} project(s) from ${sourceName}`
+  );
+  return true;
 }
 
 function load() {
-  try {
-    state = sanitizeState(JSON.parse(fs.readFileSync(dataFile(), "utf-8")));
-  } catch {
-    try {
-      // Fall back to the previous app's file (todos.json) for migration.
-      const legacyPath = path.join(app.getPath("userData"), "todos.json");
-      const legacy = JSON.parse(fs.readFileSync(legacyPath, "utf-8"));
+  const dataDir = app.getPath("userData");
+  backupService.init(dataDir);
+  db.open(dataDir);
 
-      if (Array.isArray(legacy)) {
-        state = freshState();
-        state.tasks = legacy
-          .map((t) =>
-            sanitizeTask({
-              ...t,
-              title: t.text,
-              status: t.completed ? "completed" : "planned",
-              priority:
-                t.priority === "high" ? "high" : t.priority === "low" ? "low" : "medium",
-              type: "other",
-            })
-          )
-          .filter(Boolean)
-          .slice(0, MAX_TASKS);
-        for (const t of state.tasks) {
-          logActivity({ entity: "task", entityId: t.id, action: "migrated", title: t.title });
-        }
-      } else {
-        state = sanitizeState(legacy);
-      }
-    } catch {
-      state = freshState();
-    }
+  const migratedFrom = tryMigrateLegacyJson();
+
+  state = {
+    version: SCHEMA_VERSION,
+    tasks: db.getAllTasks(),
+    projects: db.getAllProjects(),
+    activity: db.getAllActivity(MAX_ACTIVITY),
+    settings: sanitizeSettings(db.getAllSettings()),
+  };
+
+  if (migratedFrom) {
+    logActivity({
+      entity: "system",
+      action: "migrated",
+      title: "Workspace migrated to SQLite",
+      details:
+        `${state.tasks.length} work item(s), ${state.projects.length} project(s). ` +
+        `The original JSON file was kept untouched.`,
+    });
   }
-  scheduleSave();
+  rev++;
   return snapshot();
 }
 
@@ -335,6 +374,7 @@ function createTask(payload) {
   if (task.status === "completed") task.completedAt = Date.now();
 
   state.tasks.unshift(task);
+  db.insertTask(task);
   logActivity({
     entity: "task",
     entityId: task.id,
@@ -353,6 +393,10 @@ const FIELD_LABELS = {
   dueDate: "Due date",
   effort: "Estimate",
   type: "Type",
+  fileName: "File name",
+  filePath: "File path",
+  commitId: "Commit ID",
+  extraDetails: "Extra details",
 };
 
 function updateTask(id, patch) {
@@ -380,6 +424,10 @@ function updateTask(id, patch) {
   if ("tags" in patch) task.tags = cleanTags(patch.tags);
   if ("archived" in patch) task.archived = Boolean(patch.archived);
   if ("pinned" in patch) task.pinned = Boolean(patch.pinned);
+  if ("fileName" in patch) task.fileName = cleanString(patch.fileName, MAX_TITLE);
+  if ("filePath" in patch) task.filePath = cleanString(patch.filePath, MAX_TEXT);
+  if ("commitId" in patch) task.commitId = cleanString(patch.commitId, 120);
+  if ("extraDetails" in patch) task.extraDetails = cleanString(patch.extraDetails, MAX_TEXT);
 
   if ("projectId" in patch) {
     task.projectId =
@@ -476,6 +524,7 @@ function updateTask(id, patch) {
   if (!changed) return ok();
 
   task.updatedAt = Date.now();
+  db.updateTask(task);
   scheduleSave();
   return ok();
 }
@@ -486,6 +535,7 @@ function deleteTask(id) {
   if (index === -1) return fail("Work item not found");
 
   const [task] = state.tasks.splice(index, 1);
+  db.deleteTaskById(id);
 
   // Soft-delete: keep in memory for the undo window.
   if (pendingDeletes.has(id)) clearTimeout(pendingDeletes.get(id).timer);
@@ -509,8 +559,15 @@ function undeleteTask(id) {
   clearTimeout(entry.timer);
   pendingDeletes.delete(id);
 
+  // The project may have been removed during the undo window — the
+  // foreign key requires the reference to be gone too.
+  if (entry.task.projectId && !projectById(entry.task.projectId)) {
+    entry.task.projectId = null;
+  }
+
   const pos = Math.min(entry.index, state.tasks.length);
   state.tasks.splice(pos, 0, entry.task);
+  db.restoreTaskAt(entry.task, pos);
 
   logActivity({
     entity: "task",
@@ -539,6 +596,7 @@ function duplicateTask(id) {
   });
 
   state.tasks.splice(sourceIndex + 1, 0, copy);
+  db.duplicateTaskPositionAware(source.id, copy);
   logActivity({
     entity: "task",
     entityId: copy.id,
@@ -560,6 +618,7 @@ function createProject(payload) {
   project.createdAt = Date.now();
   project.updatedAt = Date.now();
   state.projects.unshift(project);
+  db.insertProject(project);
 
   logActivity({
     entity: "project",
@@ -576,6 +635,9 @@ const PROJECT_FIELD_LABELS = {
   description: "Description",
   targetDate: "Target date",
   startDate: "Start date",
+  repoUrl: "Repo URL",
+  rootPath: "Root path",
+  extraNotes: "Extra notes",
 };
 
 function updateProject(id, patch) {
@@ -600,6 +662,9 @@ function updateProject(id, patch) {
   if ("color" in patch && /^#[0-9a-fA-F]{6}$/.test(String(patch.color))) {
     project.color = patch.color;
   }
+  if ("repoUrl" in patch) project.repoUrl = cleanString(patch.repoUrl, MAX_TEXT);
+  if ("rootPath" in patch) project.rootPath = cleanString(patch.rootPath, MAX_TEXT);
+  if ("extraNotes" in patch) project.extraNotes = cleanString(patch.extraNotes, MAX_TEXT);
 
   let changed = false;
 
@@ -641,6 +706,7 @@ function updateProject(id, patch) {
   if (!changed) return ok();
 
   project.updatedAt = Date.now();
+  db.updateProject(project);
   scheduleSave();
   return ok();
 }
@@ -653,13 +719,16 @@ function deleteProject(id) {
   const [project] = state.projects.splice(index, 1);
 
   let detached = 0;
+  const now = Date.now();
   for (const task of state.tasks) {
     if (task.projectId === id) {
       task.projectId = null;
-      task.updatedAt = Date.now();
+      task.updatedAt = now;
       detached++;
     }
   }
+  // Same detach + delete, atomically, in SQLite.
+  db.deleteProjectCascade(id, now);
 
   logActivity({
     entity: "project",
@@ -676,21 +745,29 @@ function deleteProject(id) {
 
 function updateSettings(patch) {
   if (!patch || typeof patch !== "object") return ok();
+  const before = state.settings;
   state.settings = sanitizeSettings({ ...state.settings, ...patch });
+  for (const key of Object.keys(state.settings)) {
+    if (before[key] !== state.settings[key]) {
+      db.upsertSetting(key, state.settings[key]);
+    }
+  }
   scheduleSave();
   return ok();
 }
 
 function clearActivity() {
   state.activity = [];
+  db.clearActivity();
   scheduleSave();
   return ok();
 }
 
 function resetAll() {
+  db.replaceAll(freshState());
   state = freshState();
   logActivity({ entity: "system", action: "reset", title: "Workspace reset" });
-  flushImmediately();
+  flush();
   return ok();
 }
 
@@ -724,22 +801,20 @@ async function importFromFile() {
       return fail("This file doesn't look like a Forge backup.");
     }
     state = candidate;
+    // Persist the whole imported workspace (including its history) as
+    // one atomic transaction, then record the import itself on top.
+    db.replaceAll(state);
     logActivity({
       entity: "system",
       action: "imported",
       title: "Backup imported",
       details: `${state.tasks.length} work item(s), ${state.projects.length} project(s)`,
     });
-    flushImmediately();
+    flush();
     return ok();
   } catch (err) {
     return fail(`Import failed: ${err.message}`);
   }
-}
-
-function flushImmediately() {
-  scheduleSave();
-  flush();
 }
 
 /* ----------------------------- helpers ----------------------------- */
@@ -768,6 +843,7 @@ function cap(text) {
 module.exports = {
   load,
   flush,
+  close,
   getState: ok,
   createTask,
   updateTask,

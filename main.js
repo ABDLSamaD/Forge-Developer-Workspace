@@ -3,6 +3,8 @@
 const { app, BrowserWindow, Menu, session, shell } = require("electron");
 const path = require("path");
 const store = require("./store");
+const backup = require("./backup");
+const processService = require("./process-service");
 const { registerIpc } = require("./ipc");
 
 let mainWindow = null;
@@ -39,24 +41,12 @@ function createWindow() {
     },
   });
 
-  const contents = mainWindow.webContents;
-
-  // Block any window.open / popups; send http(s) links to the system browser
-  contents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
-    return { action: "deny" };
-  });
-
-  // Block navigation away from bundled files
-  contents.on("will-navigate", (event, url) => {
-    if (!url.startsWith("file://")) event.preventDefault();
-  });
-
   mainWindow.once("ready-to-show", () => mainWindow.show());
   mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
 
   // Surface renderer-side errors in the terminal during development
   if (!app.isPackaged) {
+    const contents = mainWindow.webContents;
     contents.on("console-message", (_e, level, message, line, source) => {
       if (level >= 2) {
         console.error(`[renderer] ${message} (${source}:${line})`);
@@ -74,6 +64,32 @@ function createWindow() {
     mainWindow = null;
   });
 }
+
+/* Defense-in-depth: apply popup/navigation rules to every webContents
+ * this app ever creates, not just the main window. Navigation is
+ * restricted to the bundled renderer directory; http(s) links open in
+ * the system browser; everything else is blocked. */
+app.on("web-contents-created", (_event, contents) => {
+  const allowedBase = path.dirname(path.join(__dirname, "renderer", "index.html"));
+  const { pathToFileURL } = require("url");
+  const allowedBaseUrl = pathToFileURL(allowedBase).href;
+
+  contents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+    return { action: "deny" };
+  });
+
+  contents.on("will-navigate", (event, url) => {
+    const isBundled = url.startsWith("file:") && url.startsWith(allowedBaseUrl);
+    if (!isBundled) event.preventDefault();
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+  });
+
+  // Block permission requests from any renderer.
+  contents.session.setPermissionRequestHandler((_wc, _permission, callback) =>
+    callback(false)
+  );
+});
 
 function configureMenu() {
   if (process.platform === "darwin") {
@@ -108,9 +124,14 @@ app.on("second-instance", () => {
 app.whenReady().then(() => {
   hardenSession();
   configureMenu();
-  store.load();
+  store.load(); // opens SQLite, migrates legacy JSON once
   registerIpc();
   createWindow();
+
+  // Daily snapshot — never blocks startup on failure.
+  backup.autoBackupIfNeeded().catch((err) =>
+    console.error("[backup] failed:", err.message)
+  );
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -118,7 +139,12 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", () => {
-  store.flush();
+  try {
+    processService.closeAllSessions();
+    store.close(); // checkpoint WAL + release the database file
+  } catch (err) {
+    console.error("[shutdown] close failed:", err.message);
+  }
 });
 
 app.on("window-all-closed", () => {

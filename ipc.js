@@ -2,6 +2,8 @@
 
 const { ipcMain } = require("electron");
 const store = require("./store");
+const backup = require("./backup");
+const processService = require("./process-service");
 
 /* Channels whose success mutates workspace data — the fresh state is pushed
  * back to the renderer so the UI updates instantly, every time. */
@@ -36,10 +38,17 @@ function handle(channel, fn) {
 
 function registerIpc() {
   handle("data:get", () => ({ ...store.getState(), appVersion: store.info().appVersion }));
-  handle("data:info", () => ({ ok: true, info: store.info() }));
+  handle("data:info", () => ({
+    ok: true,
+    info: { ...store.info(), backups: backup.info() },
+  }));
   handle("data:reset", () => store.resetAll());
   handle("data:export", () => store.exportToFile());
   handle("data:import", () => store.importFromFile());
+
+  handle("backup:create", () => backup.createBackupManual());
+  handle("backup:restore", () => backup.restoreFromBackup());
+  handle("backup:openFolder", () => backup.openBackupsFolder());
 
   handle("task:create", (payload) => store.createTask(payload));
   handle("task:update", (id, patch) => store.updateTask(id, patch));
@@ -53,6 +62,15 @@ function registerIpc() {
 
   handle("settings:update", (patch) => store.updateSettings(patch));
   handle("activity:clear", () => store.clearActivity());
+
+  handle("terminal:createSession", (payload) => processService.createTerminalSession(payload));
+  handle("terminal:write", (id, input) => processService.writeTerminalSession(id, input));
+  handle("terminal:resize", (id, cols, rows) => processService.resizeTerminalSession(id, cols, rows));
+  handle("terminal:kill", (id) => processService.killTerminalSession(id));
+  handle("terminal:read", (id) => processService.readTerminalOutput(id));
+
+  handle("git:status", (root) => processService.gitStatus(root));
+  handle("git:log", (root) => processService.gitLog(root));
 }
 
 module.exports = { registerIpc };

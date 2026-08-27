@@ -30,4 +30,22 @@ contextBridge.exposeInMainWorld("forge", {
 
   updateSettings: (patch) => invoke("settings:update", patch),
   clearActivity: () => invoke("activity:clear"),
+
+  terminal: {
+    createSession: (payload) => invoke("terminal:createSession", payload),
+    write: (id, input) => invoke("terminal:write", id, input),
+    resize: (id, cols, rows) => invoke("terminal:resize", id, cols, rows),
+    kill: (id) => invoke("terminal:kill", id),
+    read: (id) => invoke("terminal:read", id),
+  },
+
+  git: {
+    status: (root) => invoke("git:status", root),
+    log: (root) => invoke("git:log", root),
+  },
+
+  /* Database backups (native .db snapshots) */
+  createBackup: () => invoke("backup:create"),
+  restoreBackup: () => invoke("backup:restore"),
+  openBackupsFolder: () => invoke("backup:openFolder"),
 });

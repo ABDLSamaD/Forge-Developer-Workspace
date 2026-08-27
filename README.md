@@ -5,8 +5,8 @@ personal dashboard + work-item management + projects + schedule + audit-grade
 activity history + productivity insights, built with Electron.js.
 No frameworks, no remote content, no accounts — your data never leaves the machine.
 
-Forge is the evolution of an earlier simple todo app; old data migrates
-automatically on first launch.
+Forge stores everything in a local **SQLite database** with automatic daily
+backups. Data from older JSON versions migrates automatically on first launch.
 
 ## Feature map
 
@@ -19,7 +19,15 @@ automatically on first launch.
 | Activity | Full audit timeline grouped by day; every change records previous -> new values |
 | Completed | Historical record of finished work with reopen |
 | Archive | Old work stays available but out of dashboards and calendar |
-| Settings | Delete-confirmation preference, native export/import backups, workspace reset, shortcut reference |
+| Settings | Delete-confirmation preference, SQLite database backups (auto + manual + restore), portable JSON export/import, workspace reset, shortcut reference |
+
+## Documentation
+
+| Doc | Contents |
+| --- | --- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Process model, IPC boundary, module map, data flow |
+| [docs/DATABASE.md](docs/DATABASE.md) | Schema, migrations, JSON importer, backup/restore strategy |
+| [docs/SECURITY.md](docs/SECURITY.md) | Threat model and hardening checklist |
 
 ## Work item model
 
@@ -28,6 +36,27 @@ Review / Testing / Completed / Cancelled), priority (Critical / High / Medium /
 Low), type (Feature, Bug, Improvement, Research, Refactor, Docs, Testing,
 Deploy, Maintenance, Meeting, Personal, Other), project, tags, effort estimate
 (S/M/L), start date, due date, completion date, technical notes, pinning.
+
+## Quick task flow
+
+Forge is optimized for capturing work in seconds.
+
+Primary fields in the task form:
+
+- Title
+- Project
+- Priority
+- Due date
+
+Advanced fields remain behind the "More options" toggle:
+
+- Status
+- Type
+- Description
+- Tags
+- Start date
+- Estimate
+- Notes
 
 ## Editing
 
@@ -64,11 +93,17 @@ projects.
 electron-todo-app/
 ├── main.js              Main process: window + security hardening
 ├── ipc.js               IPC channel registration
-├── store.js             Schema v3, validation, audit log, soft-delete
-│                        window, atomic debounced saves
+├── store.js             Business rules, validation, audit log, soft-delete
+│                        undo window; mirrors every mutation into SQLite
+├── db.js                SQLite connection, WAL tuning, migrations,
+│                        prepared statements, transactions
+├── backup.js            Daily snapshots with retention, manual backup,
+│                        validated restore + relaunch
 ├── preload.js           contextBridge API (forge.*)
+├── scripts/
+│   └── db-smoke.test.js Integration tests (npm test)
 └── renderer/
-    ├── index.html       Shell: sidebar root + overlay roots
+    ├── index.html       Shell: sidebar root + overlay roots, strict CSP
     ├── styles.css       Design system
     └── js/
         ├── util.js      DOM builder, icons, constants, query utils
@@ -85,15 +120,16 @@ electron-todo-app/
 
 ## Requirements
 
-- Node.js 18 or newer
+- Node.js 18 or newer (for development only — end users install nothing)
 - npm (bundled with Node)
 
 ## Run in development
 
 ```
 cd electron-todo-app
-npm install
-npm start
+npm install        # postinstall swaps in the Electron-ABI sqlite binary
+npm start          # launches Forge against your real workspace
+npm test           # integration suite in an isolated temp profile
 ```
 
 ## Install on other computers (packaged builds)
@@ -121,27 +157,37 @@ To sign builds, set `CSC_LINK` and `CSC_KEY_PASSWORD` before running dist.
 
 ## Where data lives
 
-One JSON file per OS user:
+A SQLite database plus automatic snapshots, per OS user:
 
-- Windows: `%APPDATA%\forge-workspace\forge-data.json`
-- macOS: `~/Library/Application Support/forge-workspace/forge-data.json`
-- Linux: `~/.config/forge-workspace/forge-data.json`
+- Windows: `%APPDATA%\forge-workspace\` → `forge.db`, `backups/`
+- macOS: `~/Library/Application Support/forge-workspace/`
+- Linux: `~/.config/forge-workspace/`
 
-Use Settings -> Export backup to move data between machines; Import restores it.
+Legacy `forge-data.json` / `todos.json` are migrated once on first launch and
+then left untouched as history. See [docs/DATABASE.md](docs/DATABASE.md).
+
+Backups:
+
+- **Automatic**: daily snapshot, newest 10 kept (`backups/forge-auto-*.db`)
+- **Manual**: Settings → Database Backups → Save backup now…
+- **Restore**: Settings → Database Backups → Restore from backup… (app relaunches)
+- **Portable export**: JSON via Settings → Data → Export backup
 
 ## Security model
 
 - Sandboxed renderer (`app.enableSandbox()`, `sandbox: true`)
 - Context isolation + contextBridge; only a small typed `window.forge` API exposed
 - Strict CSP: `default-src 'none'`; no inline scripts; local assets only
+- Navigation restricted to the bundled renderer directory; popups blocked;
+  external links go to the system browser
 - Every IPC payload sanitized in the main process (enum whitelists, length caps,
   ISO-date validation, tag normalization)
-- Popups blocked, navigation away blocked, external links go to system browser
 - All web permissions denied; DevTools disabled in packaged builds
-- Single-instance lock; atomic temp-file + rename writes prevent corruption
+- Single-instance lock
+- SQL access exclusively via prepared statements in the main process; foreign
+  keys enforced; no shell command execution anywhere
 
-Electron targets desktop platforms (Windows/macOS/Linux). It does not run on
-iOS/iPadOS or Android.
+Full checklist: [docs/SECURITY.md](docs/SECURITY.md).
 
 ## License
 
